@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixhawk and Arduino Control with 3D Gyroscope</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        .header {
+            background-color: #333;
+            color: white;
+            text-align: center;
+            padding: 1em;
+            margin-bottom: 20px;
+        }
+        .control-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px;
+            font-size: 16px;
+            border: none;
+            background-color: #4CAF50;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #status, #data, #arduino-data {
+            background-color: white;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        #gyroscope {
+            width: 100%;
+            height: 300px;
+            margin-top: 20px;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background-color: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #chart-container {
+            width: 100%;
+            height: 300px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>AKASHAYANA IN THE SKY - Pixhawk and Arduino Control</h1>
+    </div>
+    <div class="control-container">
+        <button id="connectBtn">Connect Pixhawk</button>
+        <button id="disconnectBtn">Disconnect Pixhawk</button>
+        <button id="armBtn">Arm</button>
+        <button id="disarmBtn">Disarm</button>
+        <button id="autoBtn">Auto Mode</button>
+        <button id="rtlBtn">RTL Mode</button>
+        <button id="connectArduinoBtn">Connect Arduino</button>
+        <button id="disconnectArduinoBtn">Disconnect Arduino</button>
+    </div>
+    <div id="status">Status: Not connected</div>
+    <div id="data">
+        <h2>Pixhawk Data</h2>
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div id="gyroscope"></div>
+    <div id="info"></div>
+    <div id="arduino-data">
+        <h2>Arduino Data</h2>
+        <table id="arduino-data-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Data</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div id="chart-container">
+        <canvas id="arduino-chart"></canvas>
+    </div>
+    <script>
+        const socket = io();
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const armBtn = document.getElementById('armBtn');
+        const disarmBtn = document.getElementById('disarmBtn');
+        const autoBtn = document.getElementById('autoBtn');
+        const rtlBtn = document.getElementById('rtlBtn');
+        const statusDiv = document.getElementById('status');
+        const dataTableBody = document.querySelector('#dataTable tbody');
+        const connectArduinoBtn = document.getElementById('connectArduinoBtn');
+        const disconnectArduinoBtn = document.getElementById('disconnectArduinoBtn');
+        const arduinoDataTableBody = document.querySelector('#arduino-data-table tbody');
+
+        connectBtn.addEventListener('click', () => socket.emit('connect_pixhawk'));
+        disconnectBtn.addEventListener('click', () => socket.emit('disconnect_pixhawk'));
+        armBtn.addEventListener('click', () => socket.emit('arm_pixhawk'));
+        disarmBtn.addEventListener('click', () => socket.emit('disarm_pixhawk'));
+        autoBtn.addEventListener('click', () => socket.emit('auto_pixhawk'));
+        rtlBtn.addEventListener('click', () => socket.emit('rtl_pixhawk'));
+        connectArduinoBtn.addEventListener('click', () => socket.emit('connect_arduino'));
+        disconnectArduinoBtn.addEventListener('click', () => socket.emit('disconnect_arduino'));
+
+        socket.on('pixhawk_status', (data) => {
+            statusDiv.innerHTML = `Status: ${data}`;
+        });
+
+        function updateOrCreateRow(key, value, parentKey = '') {
+            const fullKey = parentKey ? `${parentKey}.${key}` : key;
+            let row = document.getElementById(fullKey);
+            
+            if (!row) {
+                row = document.createElement('tr');
+                row.id = fullKey;
+                dataTableBody.appendChild(row);
+            }
+            
+            row.innerHTML = `
+                <td>${fullKey}</td>
+                <td>${typeof value === 'object' ? '' : value}</td>
+            `;
+            
+            if (typeof value === 'object' && value !== null) {
+                for (const [nestedKey, nestedValue] of Object.entries(value)) {
+                    updateOrCreateRow(nestedKey, nestedValue, fullKey);
+                }
+            }
+        }
+
+        function removeStaleRows(currentData, parentKey = '') {
+            const rows = dataTableBody.getElementsByTagName('tr');
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const row = rows[i];
+                const rowKey = row.id;
+                if (rowKey.startsWith(parentKey)) {
+                    const remainingKey = rowKey.slice(parentKey.length + (parentKey ? 1 : 0));
+                    const keyParts = remainingKey.split('.');
+                    let currentObj = currentData;
+                    for (const part of keyParts) {
+                        if (currentObj && typeof currentObj === 'object' && part in currentObj) {
+                            currentObj = currentObj[part];
+                        } else {
+                            row.remove();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        socket.on('pixhawk_data', (data) => {
+            removeStaleRows(data);
+            for (const [key, value] of Object.entries(data)) {
+                updateOrCreateRow(key, value);
+            }
+            if (data.attitude) {
+                updateGyroscope(data.attitude.roll, data.attitude.pitch, data.attitude.yaw);
+            }
+        });
+
+        socket.on('pixhawk_error', (error) => {
+            console.error('Pixhawk error:', error);
+            statusDiv.innerHTML = `Error: ${error}`;
+        });
+
+        // 3D Gyroscope Visualization
+        let scene, camera, renderer, airplane;
+
+        function initGyroscope() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer();
+            renderer.setSize(document.getElementById('gyroscope').clientWidth, document.getElementById('gyroscope').clientHeight);
+            document.getElementById('gyroscope').appendChild(renderer.domElement);
+
+            const geometry = new THREE.ConeGeometry(0.5, 2, 32);
+            const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
+            airplane = new THREE.Mesh(geometry, material);
+            scene.add(airplane);
+
+            camera.position.z = 5;
+
+            animate();
+        }
+
+        function updateGyroscope(roll, pitch, yaw) {
+            if (!airplane) return;
+            airplane.rotation.x = pitch;
+            airplane.rotation.y = yaw;
+            airplane.rotation.z = roll;
+            document.getElementById('info').innerHTML = `Roll: ${roll.toFixed(2)}, Pitch: ${pitch.toFixed(2)}, Yaw: ${yaw.toFixed(2)}`;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            const width = document.getElementById('gyroscope').clientWidth;
+            const height = document.getElementById('gyroscope').clientHeight;
+            renderer.setSize(width, height);
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+        });
+
+        // Arduino data visualization
+        let chartData = [];
+        let chart;
+
+        function initChart() {
+            const ctx = document.getElementById('arduino-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Arduino Data',
+                        data: [],
+                        borderColor: 'rgb(75, 192, 192)',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'second'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateArduinoData(message) {
+            const now = new Date();
+            const row = arduinoDataTableBody.insertRow(0);
+            row.insertCell(0).textContent = now.toLocaleTimeString();
+            row.insertCell(1).textContent = message;
+
+            chartData.push({x: now, y: parseFloat(message)});
+            if (chartData.length > 50) {
+                chartData.shift();
+            }
+            
+            chart.data.labels = chartData.map(d => d.x);
+            chart.data.datasets[0].data = chartData.map(d => d.y);
+            chart.update();
+        }
+
+        socket.on('arduino_data', (data) => {
+            updateArduinoDat(data);
+        });
+
+        socket.on('arduino_status', (status) => {
+            console.log('Arduino status:', status);
+            // Update UI to reflect Arduino status if needed
+        });
+
+        // Initialize both Pixhawk and Arduino visualizations
+        initGyroscope();
+        initChart();
+    </script>
+</body>
+</html>
